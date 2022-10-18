@@ -1,0 +1,101 @@
+
+# Node.js
+# Build a general Node.js project with npm.
+# Add steps that analyze code, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/javascript
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  environmentName: "provision-vm-example-0001"
+  token: "aooihka2mcrfnfwgp7xghv6ofsiluxjgerttzp7zz42gdtfzspoa"
+
+stages:
+- stage: Provision
+  jobs:
+  - job:
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Create Environment'
+      continueOnError: true
+      inputs:
+        azureSubscription: 'ServiceConnectionForAzureTestPipeline'
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: 'az group create --name $(environmentName) --location japaneast;'
+    - task: AzureCLI@2
+      displayName: 'Create VM'
+      continueOnError: true
+      inputs:
+        azureSubscription: 'ServiceConnectionForAzureTestPipeline'
+        scriptType: pscore
+        scriptLocation: inlineScript
+        inlineScript: |
+          az vm create --name ProvisionedVM --image UbuntuLTS --admin-username azureuser --location japaneast --generate-ssh-keys --resource-group $(environmentName);
+    
+    # - task: AzureCLI@2
+    #   displayName: 'Register VM'
+    #   continueOnError: true
+    #   inputs:
+    #     azureSubscription: 'ServiceConnectionForAzureTestPipeline'
+    #     scriptType: pscore
+    #     scriptLocation: inlineScript
+    #     inlineScript: |
+    #       az vm run-command invoke --no-wait --yes --name "ProvisionedVM" --command-id RunShellScript --resource-group "provision-vm-example-0001" --script "mkdir azagent;cd azagent;curl -fkSL -o vstsagent.tar.gz https://vstsagentpackage.azureedge.net/agent/2.210.1/vsts-agent-linux-x64-2.210.1.tar.gz;tar -zxvf vstsagent.tar.gz; if [ -x "$(command -v systemctl)" ]; then ./config.sh --environment --environmentname "provision-vm-example-0001" --acceptteeeula --agent $HOSTNAME --url https://dev.azure.com/shanthan0479/ --work _work --projectname 'AzureTestProject' --auth PAT --token go5rtrvfb5tamtlewrbaturo2bnxj367mba2zfyymc3l4gmpgxpq --runasservice;sudo !!; sudo ./svc.sh install; sudo ./svc.sh start; else ./config.sh --environment --environmentname "provision-vm-example-0001" --acceptteeeula --agent $HOSTNAME --url https://dev.azure.com/shanthan0479/ --work _work --projectname 'AzureTestProject' --auth PAT --token go5rtrvfb5tamtlewrbaturo2bnxj367mba2zfyymc3l4gmpgxpq;sudo !!; ./run.sh;sudo !!; fi"
+    
+    - task: AzureCLI@2
+      displayName: 'Regist VM'
+      inputs:
+        azureSubscription: 'ServiceConnectionForAzureTestPipeline'
+        scriptType: pscore
+        scriptLocation: inlineScript
+        inlineScript: |
+          $customScriptUri = "https://raw.githubusercontent.com/blue0316/azure-automatic-pipeline/main/register-server-in-environment.sh";
+          $customScriptSettings="{`\`"fileUris`\`":[`\`"$customScriptUri`\`"], `\`"commandToExecute`\`":`\`"/bin/sh register-server-in-environment.sh -OrganizationUrl '$(System.CollectionUri)' -TeamProject '$(System.TeamProject)' -Environment '$(environmentName)' -Token '$(token)'`\`"}";
+          # $customScriptSettings = @{"fileUris" = @($customScriptUri); "commandToExecute" = " sh register-server-in-environment.sh";}
+          
+          az vm extension set `
+            --name CustomScript `
+            --publisher Microsoft.Azure.Extensions `
+            --vm-name ProvisionedVM `
+            --resource-group $(environmentName) `
+            --settings $customScriptSettings;
+
+- stage: Test
+  dependsOn: Provision
+  condition: succeeded()
+  displayName: Test Stage
+  jobs:
+  - deployment: TestCustomTask
+    displayName: Deploy Web App
+    environment:
+      name: provision-vm-example-0001
+      resourceType: VirtualMachine
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '16.x'
+            displayName: 'Install Node.js'
+          - script: |
+              git clone https://github.com/blue0316/puppeteer-test-project.git
+            displayName: 'git clone'
+            continueOnError: true
+          - task: Npm@1
+            displayName: 'install node packages'
+            inputs:
+              command: 'install'
+              workingDir: 'puppeteer-test-project'
+            continueOnError: true
+          - task: Npm@1
+            displayName: 'start test project'
+            inputs:
+              command: ci
+              workingDir: 'puppeteer-test-project'
+            continueOnError: true
